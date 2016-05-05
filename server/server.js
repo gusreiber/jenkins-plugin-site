@@ -12,16 +12,17 @@ const runningMode = process.env.NODE_ENV || 'development';
 
 var
   webpack = require('webpack'),
-  WebpackDevServer = require('webpack-dev-server'),
-  config = require(`../webpack.config.${runningMode}`);
+  config = require(`../webpack.config.${runningMode}`),
+  WebpackServer = require('webpack-dev-server');
 
-new WebpackDevServer(webpack(config), {
+new WebpackServer(webpack(config), {
   publicPath: config.output.publicPath,
   hot: true,
   historyApiFallback: true,
   proxy: {
     '/plugin*': backend,
     '/latest*': backend,
+    '/labels*': backend,
     '/getCategories*': backend
   }
 }).listen(portClient, ip, (err) => {

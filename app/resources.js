@@ -1,10 +1,7 @@
 import { createSelector } from 'reselect';
-import { createSearchAction, getSearchSelectors } from 'redux-search';
 import Immutable from 'immutable';
 import keymirror from 'keymirror';
 import { api, logger } from './commons';
-import _ from 'lodash';
-import React from 'react';
 
 api.init({
   latency: 100
@@ -21,6 +18,7 @@ export const State = Immutable.Record({
   plugins: Immutable.OrderedMap(),
   isFetching: false,
   searchOptions: SearchOptions,
+  labels: [],
   labelFilter: Immutable.Record({//fixme: that should become label: search, sort: field
     field: 'title',
     searchField: null,
@@ -28,26 +26,7 @@ export const State = Immutable.Record({
     search: []
   })
 });
-/*
-buildDate: "Mar 03, 2011"
-dependencies: Array[0]
-developers: Array[1]
-excerpt: "This (experimental) plug-in exposes the jenkins build extension
- points (SCM, Build, Publish) to a groovy scripting environment that has
-  some DSL-style extensions for ease of development."
-gav: "jenkins:AdaptivePlugin:0.1"
-labels: Array[2]
-name: "AdaptivePlugin"
-releaseTimestamp: "2011-03-03T16:49:24.00Z"
-requiredCore: "1.398"
-scm: "github.com"
-sha1: "il8z91iDnqVMu78Ghj8q2swCpdk="
-title: "Jenkins Adaptive DSL Plugin"
-url: "http://updates.jenkins-ci.org/download/plugins/AdaptivePlugin/0.1/AdaptivePlugin.hpi"
-version: "0.1"
-wiki: "https://wiki.jenkins-ci.org/display/JENKINS/Jenkins+Adaptive+Plugin"
-*/
-// Immutable Data attributes must be accessible as getters
+
 const Record = Immutable.Record({
   id: null,
   name: null,
@@ -64,12 +43,12 @@ const Record = Immutable.Record({
   dependencies: []
 });
 
-
 export const ACTION_TYPES = keymirror({
   CLEAR_PLUGIN_DATA: null,
   FETCH_PLUGIN_DATA: null,
   SET_PLUGIN_DATA: null,
   SET_LABEL_FILTER: null,
+  SET_LABELS: null,
   SET_QUERY_INFO: null
 });
 
@@ -83,8 +62,8 @@ export const actionHandlers = {
   [ACTION_TYPES.SET_PLUGIN_DATA](state, { payload }): State {
     return state.set('plugins', payload);
   },
-  [ACTION_TYPES.SET_LABEL_FILTER](state, { payload }): State {
-    return state.set('labelFilter', payload);
+  [ACTION_TYPES.SET_LABELS](state, { payload }): State {
+    return state.set('labels', payload);
   },
   [ACTION_TYPES.SET_QUERY_INFO](state, { payload }): State {
     return state.set('searchOptions', payload);
@@ -92,43 +71,20 @@ export const actionHandlers = {
 };
 
 export const actions = {
-    //FIXME: This should not inject React DOM here, but.... hack...
-  makeIcon(title, type){
-    title = title
-      .replace('Jenkins ','')
-      .replace('jenkins ','')
-      .replace(' Plugin','')
-      .replace(' Plug-in','')
-      .replace(' lugin','');
-    type = type || '';
-    const colors = ['#6D6B6D','#DCD9D8','#D33833','#335061','#81B0C4','#709aaa','#000'];
-    const color = colors[(title.length % 7)]; //pick color based on chars in the name to make semi-random, but fixed color per-plugin
-    const iconClass=`i ${type};
-    color = ${color}`;
-
-    const firstLetter = title.substring(0,1).toUpperCase();
-    const firstSpace = title.indexOf(' ') + 1;
-    const nextIndx = (firstSpace === 0)?
-        1: firstSpace;
-    const nextLetter = title.substring(nextIndx,nextIndx + 1);
-
-    return (
-      <i className={iconClass} style={{background: color}}>
-        <span className="first">{firstLetter}</span>
-        <span className="next">{nextLetter}</span>
-      </i>
-    );
-  },
 
   clearPluginData: () => ({ type: ACTION_TYPES.CLEAR_PLUGIN_DATA }),
 
   fetchPluginData: () => ({ type: ACTION_TYPES.FETCH_PLUGIN_DATA }),
 
-  setFilter(filter) {
+  generateLabelData: () => {
     return (dispatch) => {
-      dispatch({
-        type: ACTION_TYPES.SET_LABEL_FILTER,
-        payload: filter
+      return api.getJSON('/labels',(error, data) => {
+        if (data && data.docs) {
+          dispatch({
+            type: ACTION_TYPES.SET_LABELS,
+            payload: Immutable.List(data.docs)
+          });
+        }
       });
     };
   },
@@ -136,22 +92,15 @@ export const actions = {
   generatePluginData(query={}) {
     return (dispatch) => {
       logger.log(query);
-      let url;
-      if (query.category) {
-        const CATEGORY_URL = '/getCategories';
-        url = `${CATEGORY_URL}?id=${query.category}`;
-      }else if(query.latest){
-        url = '/latest';
-      }else {
-        const PLUGINS_URL = '/plugins';
-        url = `${PLUGINS_URL}?page=${query.page || 1}&limit=${query.limit || 10}&q=${query.q || ''}`;
-      }
-      logger.log(query, url);
+      let PLUGINS_URL = `/plugins?page=${query.page}`;
+     ['limit', 'q', 'sort', 'asc', 'category', 'labelFilter', 'latest']
+        .filter(item => query[item])
+        .map(item => PLUGINS_URL += `&${item}=${query[item]}`);
+      logger.log(query, `${PLUGINS_URL}`);
       dispatch(actions.clearPluginData());
       dispatch(actions.fetchPluginData());
-      const plugins = {};
 
-      return api.getJSON(url,(error, data) => {
+      return api.getJSON(`${PLUGINS_URL}`,(error, data) => {
         if (data) {
           const searchOptions = new SearchOptions({
             limit: data.limit,
@@ -160,13 +109,8 @@ export const actions = {
             total: data.total
           });
 
-          const items = data.docs;
-          _.forEach(items, (item) => {
-            _.set(item, 'id', item.sha1);
-            _.set(item, 'iconDom', actions.makeIcon(item.title));
-            plugins[item.id] = new Record(item);
-          });
-          const recordsMap = Immutable.Map(plugins);
+          const items = data.docs.map(item => new Record(item));
+          const recordsMap = Immutable.OrderedSet(items);
           dispatch({
             type: ACTION_TYPES.SET_PLUGIN_DATA,
             payload: recordsMap
@@ -179,46 +123,15 @@ export const actions = {
         }
       });
     };
-  },
-  searchPluginData: createSearchAction('plugins')
+  }
 };
 
-export function groupAndCountLabels(recordsMap) {
-  const labelMap = _.map(
-      _.groupBy(
-        _.flatten(recordsMap.toArray().map((a) => a.labels)
-      )
-    ), (array, item) => {
-      return {
-        value: array.length,
-        key: item
-      };
-    }
-  );
-  return Immutable.List(labelMap);
-}
-
 export const resources = state => state.resources;
-export const resourceSelector = (resourceName, state) => state.resources.get(resourceName);
 export const plugins = createSelector([resources], resources => resources.plugins);
+export const labels = createSelector([resources], resources => resources.labels);
 export const searchOptions = createSelector([resources], resources => resources.searchOptions);
 
 export const isFetching = createSelector([resources], resources => resources.isFetching);
-export const labelFilter = createSelector([resources], resources => resources.labelFilter);
-
-const pluginSelectors = getSearchSelectors({ resourceName: 'plugins', resourceSelector });
-export const searchText = pluginSelectors.text;
-export const filteredList = createSelector([pluginSelectors.result], result => Immutable.List(result));
-
-export const getVisiblePlugins = createSelector(
-  [ filteredList, plugins ],
-  (filteredList, plugins) => {
-    return filteredList.map(
-      (id) => {
-        return plugins.get(id);
-      });
-  }
-);
 
 export const totalSize = createSelector(
   [ searchOptions ],
@@ -228,47 +141,9 @@ export const totalSize = createSelector(
 );
 
 export const filterVisibleList = createSelector (
-  [getVisiblePlugins, labelFilter],
-  (plugins, labelFilter) => {
-
-    if (labelFilter instanceof Function) {
-      labelFilter = labelFilter();
-    }
-
-    const list  = plugins
-    .filter(
-      item => {
-        if ( !labelFilter.searchField || !labelFilter.search || !labelFilter.search.length > 0) {
-          return true;
-        }
-        const matchIndex = _.findIndex(item[labelFilter.searchField], (i) => {
-          let match = false;
-          labelFilter.search.some(searchFilter => {
-            match = (i === searchFilter);
-            return match;
-          });
-          return match;
-        });
-        return ( matchIndex >= 0);
-      }
-    )
-    .sortBy(plugin => {
-      return plugin[labelFilter.field];}, (plugin, nextPlugin) => {
-      if (labelFilter.asc) {
-        return nextPlugin.localeCompare(plugin);
-      } else {
-        return plugin.localeCompare(nextPlugin);
-      }
-    });
-    logger.warn(`xxx ${list}`);
-    return list;
-  }
-);
-
-export const getVisiblePluginsLabels = createSelector(
-  [ filterVisibleList ],
-  ( plugins ) => {
-    return groupAndCountLabels(plugins);
+  [plugins],
+  (plugins) => {
+    return plugins;
   }
 );
 
